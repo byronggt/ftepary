@@ -1,0 +1,247 @@
+---
+title: "Análisis de rendimiento de líneas de frijol Tepary en múltiples localidades"
+author: "Dr. Byron González, [http://byrong.cc](https://byrong.cc)"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+---
+
+```{css, echo=FALSE}
+h2 { /* Selector para los títulos de segundo nivel */
+  color: #003366; /* Un color azul oscuro e intenso */
+}
+```
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+## Introducción
+
+Este documento presenta el análisis de un experimento en bloques completos al azar para evaluar el rendimiento (`Rend`) de 14 líneas (`Lin`) de frijol Tepary en 3 localidades (`Loc`) diferentes. En cada localidad, el experimento se replicó en 4 bloques (`Bloq`).
+
+El objetivo es determinar si existen diferencias significativas en el rendimiento entre las líneas, entre las localidades, y si existe una interacción entre ambos factores.
+
+## 1. Preparación del Entorno
+
+### Carga de Bibliotecas
+
+Primero, se colocan en memoria todas las bibliotecas necesarias para el análisis. El siguiente código verifica si cada biblioteca está instalada; de no ser así, se instala y se coloca en memoria.
+
+```{r load-packages, results='hide'}
+# Lista de paquetes requeridos
+packages <- c("car", "lattice", "tidyverse", "performance", "nlme", 
+              "lme4", "lmerTest", "emmeans", "multcomp", "readxl")
+
+# Instalar y cargar paquetes
+for (pkg in packages) {
+  if (!require(pkg, character.only = TRUE)) {
+    install.packages(pkg)
+    library(pkg, character.only = TRUE)
+  }
+}
+```
+
+### Importación y Preparación de Datos
+
+Se importan los datos desde el archivo `frijol.xlsx`. Luego, se convierten las variables categóricas (`Loc`, `Lin`, `Bloq`, `Loc_Bloq`) a factores, que es el tipo adecuado para variables de agrupación en los modelos estadísticos de R.
+
+```{r import-data}
+# Importar la tabla de datos "frijol.xlsx"
+grupo <- read_excel("frijol.xlsx")
+
+# Vistazo inicial a los datos
+head(grupo)
+tail(grupo)
+
+# Conversión de variables a factores
+grupo$Loc <- as.factor(grupo$Loc)
+grupo$Lin <- as.factor(grupo$Lin)
+grupo$Bloq <- as.factor(grupo$Bloq)
+grupo$Loc_Bloq <- as.factor(grupo$Loc_Bloq)
+
+# Revisar la estructura final de los datos
+str(grupo)
+```
+
+## 2. Análisis Exploratorio de Datos (EDA)
+
+### Gráfico de Interacción
+
+Un gráfico de interacción permite visualizar cómo el rendimiento promedio de las líneas cambia a través de las diferentes localidades. Si las líneas no son paralelas, sugiere una posible interacción `Localidad:Línea`. Esto significaría que la "mejor" línea depende de la localidad.
+
+```{r interaction-plot, echo=FALSE, fig.cap="Gráfico de interacción entre Localidad y Línea."}
+interaction.plot(x.factor = grupo$Loc, # Factor en el eje X
+                 trace.factor = grupo$Lin, # Factor que define las líneas
+                 response = grupo$Rend, # Variable de respuesta
+                 fixed = TRUE, 
+                 xlab = "Localidades", 
+                 ylab = "Rendimiento Promedio")
+```
+
+### Verificación del Diseño Experimental
+
+Se comprueba que el diseño experimental esté balanceado. Es decir, que todas las líneas se hayan probado en todas las localidades y que el número de bloques sea consistente.
+
+```{r check-design}
+# Verificar que todas las localidades tienen todas las líneas
+knitr::kable(with(grupo, table(Loc, Lin)), caption = "Tabla de contingencia: Localidad vs. Línea")
+
+# Verificar el número de bloques por localidad
+knitr::kable(with(grupo, table(Loc, Bloq)), caption = "Tabla de contingencia: Localidad vs. Bloque")
+```
+
+### Visualización del Rendimiento por Factor
+
+Usando `lattice`, se crean gráficos para observar la distribución del rendimiento de cada línea dentro de cada localidad y viceversa. Esto brinda una idea a detalle de la variabilidad de los datos.
+
+```{r lattice-plots, echo=FALSE, fig.cap="Distribución del rendimiento."}
+# Rendimiento de las Líneas, condicionado por Localidad
+print(xyplot(Rend ~ Lin | Loc, data = grupo,
+       xlab = "Líneas", ylab = "Rendimiento",
+       main = "Rendimiento de Líneas por Localidad"))
+
+# Rendimiento en las Localidades, condicionado por Línea
+print(xyplot(Rend ~ Loc | Lin, data = grupo,
+       xlab = "Localidades", ylab = "Rendimiento",
+       main = "Rendimiento en Localidades por Línea"))
+```
+
+## 3. Análisis de Varianza (ANOVA)
+
+### ANOVA por Localidad (Ejemplo)
+
+Como ejemplo, se realiza un análisis de varianza (ANOVA) para una sola localidad. El modelo estadístico para un diseño en bloques completos al azar es:
+
+$$y_{ij} = \mu + Bloq_i + Lin_j + \epsilon_{ij}$$
+
+Donde:
+*   $y_{ij}$ es el rendimiento.
+*   $\mu$ es la media general.
+*   $Bloq_i$ es el efecto del i-ésimo bloque.
+*   $Lin_j$ es el efecto de la j-ésima línea.
+*   $\epsilon_{ij}$ es el error experimental.
+
+Aquí, `Bloq` y `Lin` se tratan como efectos fijos.
+
+```{r anova-jicaro}
+# Subconjunto de datos para la localidad "Jicaro"
+jic <- subset(grupo, Loc == "Jicaro")
+
+# Ajuste del modelo lineal (ANOVA)
+aov.jic <- lm(Rend ~ Bloq + Lin, data = jic)
+
+# Tabla ANOVA
+anova(aov.jic)
+```
+
+### ANOVA para todas las localidades (de manera iterativa)
+
+Es posible automatizar el proceso anterior para todas las localidades usando `split` y `lapply`. Esto permite ajustar un modelo ANOVA para cada localidad y extraer los resultados de forma eficiente.
+
+```{r anova-iterative}
+# 1. Dividir el dataframe en una lista, con un elemento por localidad
+das <- split(grupo, grupo$Loc)
+
+# 2. Ajustar un modelo ANOVA para cada elemento de la lista
+m01 <- lapply(das, FUN = aov, formula = Rend ~ Bloq + Lin)
+
+# 3. Mostrar la tabla ANOVA para cada localidad
+lapply(m01, anova)
+
+# 4. Extraer los cuadrados medios del error (residual) de cada modelo
+glrs <- sapply(m01, df.residual)   # Grados de libertad del residual
+qmrs <- sapply(m01, deviance) / glrs # Cuadrados medios del residual
+
+print("Cuadrados Medios del Error por Localidad:")
+print(qmrs)
+```
+La diferencia en los Cuadrados Medios del Error (`qmrs`) entre localidades sugiere heterocedasticidad (varianzas desiguales). Esto viola uno de los supuestos del ANOVA combinado. Se justifica el uso de modelos mixtos para modelar esta variabilidad.
+
+## 4. Análisis con Modelos Mixtos
+
+Los modelos mixtos son ideales para este diseño experimental, debido a que permiten:
+1.  Analizar todas las localidades juntas
+2.  Modelar la estructura de anidamiento de los bloques dentro de las localidades (`Bloq` anidado en `Loc`) como un efecto aleatorio
+3.  Modelar la heterogeneidad de varianzas entre localidades
+
+### Modelo Mixto 1: Varianza Homogénea
+
+Se ajusta un primer modelo mixto donde `Loc`, `Lin` y su interacción son efectos fijos. El efecto `Loc_Bloq` (la combinación única de bloque dentro de cada localidad) se trata como un efecto aleatorio. Este modelo aún asume que la varianza del error es la misma en todas las localidades.
+
+```{r mixed-model-1}
+mc12 <- lme(Rend ~ 1 + Loc + Lin + Loc:Lin,
+            random = list(Loc_Bloq = pdIdent(~1)),
+            method = "REML",
+            data = grupo)
+
+summary(mc12)
+print(anova(mc12))
+```
+
+La tabla ANOVA muestra que la interacción `Loc:Lin` es altamente significativa (p < .0001). Confirma lo sugerido por el gráfico de interacción: el comportamiento de las líneas no es el mismo en todas las localidades.
+
+#### Diagnóstico del Modelo `mc12`
+
+Los gráficos de residuos muestran un patrón de "embudo". Esto indica que la varianza no es constante (heterocedasticidad). Se confirma la necesidad de un modelo más complejo.
+
+```{r diag-model-1, echo=FALSE, fig.cap="Diagnósticos para el modelo mc12 (varianza homogénea)."}
+plot(mc12, main = "Residuos vs. Ajustados (Modelo mc12)") # Patrón de abanico
+qqPlot(residuals(mc12), main = "Q-Q Plot de Residuos (Modelo mc12)")
+```
+
+### Modelo Mixto 2: Modelar la heterocedasticidad
+
+Para corregir el problema anterior, se ajusta un segundo modelo mixto que permite que la varianza del error sea diferente para cada localidad. Esto se logra con el argumento `weights = varIdent(form = ~1 | Loc)`.
+
+```{r mixed-model-2}
+mc13 <- lme(Rend ~ 1 + Loc + Lin + Loc:Lin,
+            random = list(Loc_Bloq = pdIdent(~1)),
+            weights = varIdent(form = ~1 | Loc), # Permite varianzas diferentes por Localidad
+            method = "REML",
+            data = grupo)
+
+summary(mc13) # El summary ya muestra los parámetros de varianza
+print(anova(mc13))
+```
+
+El `summary` de este modelo ahora incluye los "Variance function parameters", con los multiplicadores de la varianza para cada localidad, confirmando que son diferentes. La interacción `Loc:Lin` permanece altamente significativa.
+
+#### Diagnóstico del Modelo `mc13`
+
+Los nuevos gráficos de residuos se ven mucho mejor. El patrón de "embudo" ha desaparecido. Esto indica que el modelo `mc13` es más apropiado para estos datos.
+
+```{r diag-model-2, echo=FALSE, fig.cap="Diagnósticos para el modelo mc13 (varianza heterogénea)."}
+plot(mc13, main = "Residuos vs. Ajustados (Modelo mc13)")
+qqPlot(residuals(mc13), main = "Q-Q Plot de Residuos (Modelo mc13)")
+```
+
+## 5. Comparación de Medias (Post-Hoc)
+
+Dado que la interacción `Localidad:Línea` es significativa, el paso siguiente es realizar comparaciones de medias para entender qué líneas son estadísticamente diferentes dentro de cada localidad.
+
+Se usa el paquete `emmeans` para calcular las medias ajustadas (Least-Squares Means) y `multcomp` para realizar una prueba de comparación múltiple (Tukey) y asignar letras de significancia.
+
+```{r post-hoc}
+# Calcular medias ajustadas para la interacción Lin*Loc
+results_m0 <- emmeans(mc13, specs = ~ Lin * Loc) %>%
+  # Aplicar prueba de comparaciones múltiples y agrupar con letras
+  cld(Letters = letters, sort = TRUE, reverse = TRUE) %>%
+  as.data.frame()
+
+# Ordenar resultados para mejor visualización
+results_m0<-emmeans(mc13, specs =~Lin*Loc) %>% 
+  multcomp::cld(Letters=letters, sort=T, reverse=T) %>% 
+  as.data.frame()
+
+# Mostrar resultados
+print(results_m0, n = 50)
+```
+
+### Interpretación de resultados
+
+La tabla `results_m0` muestra el rendimiento promedio estimado (`emmean`) para cada línea en cada localidad. Las líneas que comparten una misma letra dentro de una misma localidad no son estadísticamente diferentes entre sí (con un nivel de significancia alfa, usualmente 0.05).
+
+Por ejemplo, al observar los resultados para la localidad "Jicaro", es posible identificar el grupo de líneas con el mayor rendimiento y cómo se comparan con las demás. Este análisis debe repetirse para cada localidad.
