@@ -237,6 +237,7 @@ results_m0<-emmeans(mc13, specs =~Lin*Loc) %>%
   as.data.frame()
 
 # Mostrar resultados
+# La opción n = 50 asegura que se impriman todas las filas (14 líneas * 3 locs = 42)
 print(results_m0, n = 50)
 ```
 
